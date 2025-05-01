@@ -1,11 +1,11 @@
 {
-    "botToken": "6504459759:AAEEO5y7UnbBUspCyxwXwn2VAvHZqu2jLkc",
-    "adminId": "5167635352",
+    "botToken": "",
+    "adminId": "",
     "sql": {
-        "host": "127.0.0.1",
-        "user": "mrli_ffkc",
-        "password": "ZmbhmyTJHYTyzLc6",
-        "database": "mrli_ffkc"
+        "host": "",
+        "user": "",
+        "password": "",
+        "database": ""
     },
     "pushInterval": 600000,
     "pingInterval": 600000
