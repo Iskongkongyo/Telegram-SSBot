@@ -19,7 +19,7 @@ npm install node-telegram-bot-api mysql2 chokidar winston
 
 ## 修改配置信息
 
-导入datas.sql文件到数据库中，自行修改config.json配置文件中机器人的API TOKEN、数据库等信息。
+导入datas.sql文件到MySQL数据库中，自行修改config.json配置文件中机器人的API TOKEN、数据库等信息。
 
 ## 配置文件(config.json)说明
 
