@@ -1,11 +1,85 @@
 {
     "botToken": "",
-    "adminId": "",
+    "adminIds": [
+        ""
+    ],
     "sql": {
-        "host": "",
+        "host": "127.0.0.1",
         "user": "",
         "password": "",
         "database": ""
+    },
+    "infos": {
+        "caption": "生活不易，芙芙发车卖艺~",
+        "reply_markup": {
+            "inline_keyboard": [
+                [
+                    {
+                        "text": "下一个",
+                        "callback_data": "/next"
+                    },
+                    {
+                        "text": "停止开车",
+                        "callback_data": "/zt"
+                    },
+                    {
+                        "text": "联系我",
+                        "url": "https://t.me/IsKongKong"
+                    }
+                ]
+            ]
+        }
+    },
+    "adminInfos": {
+        "caption": "生活不易，芙芙发车卖艺~",
+        "reply_markup": {
+            "inline_keyboard": [
+                [
+                    {
+                        "text": "下一个",
+                        "callback_data": "/next"
+                    },
+                    {
+                        "text": "停止开车",
+                        "callback_data": "/zt"
+                    },
+                    {
+                        "text": "联系我",
+                        "url": "https://t.me/IsKongKong"
+                    }
+                ],
+                [
+                    {
+                        "text": "Github",
+                        "url": "https://github.com/Iskongkongyo"
+                    },
+                    {
+                        "text": "去重",
+                        "callback_data": "/adminClear"
+                    },
+                    {
+                        "text": "下载",
+                        "callback_data": "/adminDown"
+                    }
+                ]
+            ]
+        }
+    },
+    "uploadVideosInfos": {
+        "reply_markup": {
+            "inline_keyboard": [
+                [
+                    {
+                        "text": "去重",
+                        "callback_data": "/adminClear"
+                    },
+                    {
+                        "text": "下载",
+                        "callback_data": "/adminDown"
+                    }
+                ]
+            ]
+        }
     },
     "pushInterval": 600000,
     "pingInterval": 600000
