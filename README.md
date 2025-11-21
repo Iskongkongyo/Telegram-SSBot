@@ -15,8 +15,6 @@
 
 请确保已安装以下模块：
 
-bash
-
 ```
 npm install node-telegram-bot-api mysql2 chokidar winston
 ```
@@ -49,8 +47,6 @@ npm install node-telegram-bot-api mysql2 chokidar winston
 ## ▶️ 运行方式
 
 在项目目录下执行：
-
-bash
 
 ```
 node tgkc.js
