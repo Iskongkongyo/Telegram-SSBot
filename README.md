@@ -16,13 +16,14 @@
 请确保已安装以下模块：
 
 ```
-npm install node-telegram-bot-api mysql2 chokidar winston
+npm install node-telegram-bot-api mysql2 chokidar winston archiver
 ```
 
 - **node-telegram-bot-api** → Telegram Bot API 封装库
 - **mysql2** → MySQL 数据库连接驱动
 - **chokidar** → 文件监听工具
 - **winston** → 日志管理工具
+- **archiver** → zip压缩包工具
 
 ## 🗄️ 数据库配置
 
