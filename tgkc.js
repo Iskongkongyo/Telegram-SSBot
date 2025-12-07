@@ -236,7 +236,7 @@ class VideoBot {
 			}
 
 			const [rows] = await this.pool.query(
-				'SELECT now FROM groups WHERE chatid = ?',
+				'SELECT now FROM `groups` WHERE chatid = ?',
 				[chat.id]
 			);
 
@@ -252,7 +252,7 @@ class VideoBot {
 	async upsertGroup(chatId, startIndex) {
 		if (startIndex === 0) {
 			await this.pool.query(
-				'INSERT INTO groups (chatid, now) VALUES (?, ?) ON DUPLICATE KEY UPDATE now = VALUES(now)',
+				'INSERT INTO `groups` (chatid, now) VALUES (?, ?) ON DUPLICATE KEY UPDATE now = VALUES(now)',
 				[chatId, startIndex]
 			);
 		}
@@ -318,7 +318,7 @@ class VideoBot {
 			nextIndex
 		});
 		this.pool.query(
-			'UPDATE groups SET now = ? WHERE chatid = ?',
+			'UPDATE `groups` SET now = ? WHERE chatid = ?',
 			[nextIndex, chatId]
 		).catch(err => logger.error(`状态更新失败: ${err.message}`));
 	}
@@ -326,7 +326,7 @@ class VideoBot {
 	async handleLowInventory(chatId) {
 		await this.bot.sendMessage(chatId, '库存告急，请联系管理员~');
 		this.timeoutMap.delete(chatId);
-		await this.pool.query('UPDATE groups SET now = 0 WHERE chatid = ?', [chatId]);
+		await this.pool.query('UPDATE `groups` SET now = 0 WHERE chatid = ?', [chatId]);
 	}
 
 	// 处理视频回调按键
@@ -441,7 +441,7 @@ class VideoBot {
 			// 导出 groups 表
 			await new Promise((resolve, reject) => {
 				exec(
-					`mysqldump -h${host} -u${user} -p${password} ${database} groups > ${groupDump}`,
+					`mysqldump -h${host} -u${user} -p${password} ${database}  \`groups\`  > ${groupDump}`,
 					(err) => (err ? reject(err) : resolve())
 				);
 			});
@@ -490,8 +490,9 @@ class VideoBot {
 	sendErrorMessage(chatId, message) {
 		this.bot.sendMessage(chatId, '服务暂时不可用，请稍后再试')
 			.catch(() => logger.warn('发送错误消息失败'));
-		this.bot.sendMessage(this.config.adminId, `故障通知: ${message}`)
-			.catch(() => logger.warn('发送管理员通知失败'));
+                this.config.adminIds.forEach(id => {
+                      this.bot.sendMessage(id, `故障通知: ${message}`).catch(() => logger.warn('发送管理员通知失败'));
+                });
 	}
 }
 
