@@ -16,7 +16,7 @@
 请确保已安装以下模块：
 
 ```
-npm install node-telegram-bot-api mysql2 chokidar winston archiver
+npm install node-telegram-bot-api mysql2 winston chokidar archiver
 ```
 
 - **node-telegram-bot-api** → Telegram Bot API 封装库
@@ -27,7 +27,7 @@ npm install node-telegram-bot-api mysql2 chokidar winston archiver
 
 ## 🗄️ 数据库配置
 
-1. 将 `datas.sql` 文件导入至 MySQL 数据库。
+1. 创建一个数据库，并将 `init.sql` 文件导入至新创建的MySQL数据库。
 2. 修改 `config.json` 文件，填入机器人 API Token 和数据库连接信息。
 
 ## 📝 配置文件说明（config.json）
