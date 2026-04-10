@@ -82,5 +82,5 @@
         }
     },
     "pushInterval": 600000,
-    "pingInterval": 600000
+    "pingInterval": 3600000
 }
