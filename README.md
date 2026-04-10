@@ -1,6 +1,6 @@
 # 🚗 TG开车机器人说明文档
 
-一个基于 **Node.js** 的 Telegram 自动推送视频机器人，支持群组和个人使用。 管理员可上传或转发视频至机器人，系统会自动收录视频并定时推送。
+一个基于 **Node.js** 的 Telegram 自动推送视频机器人，支持群组和个人使用。群组里Bot管理员、群主或者群聊管理员均可操控机器人！管理员可上传或转发视频至机器人，系统会自动收录视频并定时推送！
 
 ## 📌 功能概述
 
@@ -43,7 +43,7 @@ npm install node-telegram-bot-api mysql2 winston chokidar archiver
 | **caption**           | String | 推送视频下方的文字说明                                       |
 | **inline_keyboard**   | Array  | 内联按钮配置，每个元素为一行按钮，包含 `text`、`url`、`callback_data` |
 | **pushInterval**      | Number | 视频推送间隔（秒），默认 600 秒（10 分钟）                   |
-| **pingInterval**      | Number | 数据库心跳检测间隔（秒），默认 600 秒（10 分钟）             |
+| **pingInterval**      | Number | 数据库心跳检测间隔（秒），默认 1小时            |
 
 ## ▶️ 运行方式
 
