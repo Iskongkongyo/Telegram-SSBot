@@ -1,16 +1,24 @@
 {
-    "botToken": "",
+    "botToken": "your_bot_token_here",
     "adminIds": [
-        ""
+        "123456789"
     ],
     "sql": {
         "host": "127.0.0.1",
-        "user": "",
-        "password": "",
-        "database": ""
+        "port": 3306,
+        "user": "your_mysql_user",
+        "password": "your_mysql_password",
+        "database": "telegram_ssbot",
+        "charset": "utf8mb4"
     },
+    "logging": {
+        "level": "info",
+        "dir": "logs",
+        "console": true
+    },
+    "startVideoId": 1,
     "infos": {
-        "caption": "生活不易，芙芙发车卖艺~",
+        "caption": "输入/zt停止开车，生活不易，芙芙发车卖艺~",
         "reply_markup": {
             "inline_keyboard": [
                 [
@@ -31,7 +39,7 @@
         }
     },
     "adminInfos": {
-        "caption": "生活不易，芙芙发车卖艺~",
+        "caption": "输入/zt停止开车，生活不易，芙芙发车卖艺~",
         "reply_markup": {
             "inline_keyboard": [
                 [
