@@ -1,6 +1,7 @@
 const TelegramBot = require('node-telegram-bot-api');
 const mysql = require('mysql2/promise');
 const fs = require('fs').promises;
+const fsSync = require('fs');
 const createReadStream = require('fs').createReadStream;
 const createWriteStream = require('fs').createWriteStream;
 const path = require('path');
@@ -25,21 +26,68 @@ const CONSTANTS = {
     UPLOAD_SUMMARY_DELAY: 60000,    // 管理员上传视频响应合并时间
     PING_INTERVAL: 3600000,         // 数据库保活心跳（1小时，避免资源浪费）
     DEFAULT_PUSH_INTERVAL: 600000,  // 默认推送间隔
+    POLLING_ERROR_LOG_WINDOW: 10000,
+    MIN_POLLING_RECOVERY_DELAY: 5000,
+    MAX_POLLING_RECOVERY_DELAY: 300000,
+    DEFAULT_LOG_DIR: path.join(__dirname, 'logs'),
     CONFIG_PATH: path.join(__dirname, 'config.json') // 使用绝对路径
 };
 
+const DEFAULT_CONFIG = {
+    adminIds: [],
+    sql: {
+        host: '127.0.0.1',
+        port: 3306,
+        charset: 'utf8mb4'
+    },
+    logging: {
+        level: 'info',
+        dir: 'logs',
+        console: true
+    },
+    infos: {},
+    adminInfos: {},
+    uploadVideosInfos: {},
+    startVideoId: 1,
+    pushInterval: CONSTANTS.DEFAULT_PUSH_INTERVAL,
+    pingInterval: CONSTANTS.PING_INTERVAL
+};
+
+function ensureLogDir(logDir) {
+    fsSync.mkdirSync(logDir, { recursive: true });
+}
+
+function buildLoggerTransports(logConfig = DEFAULT_CONFIG.logging) {
+    const resolvedDir = path.isAbsolute(logConfig.dir)
+        ? logConfig.dir
+        : path.join(__dirname, logConfig.dir || 'logs');
+
+    ensureLogDir(resolvedDir);
+
+    const transports = [
+        new winston.transports.File({ filename: path.join(resolvedDir, 'error.log'), level: 'error' }),
+        new winston.transports.File({ filename: path.join(resolvedDir, 'run.log') })
+    ];
+
+    if (logConfig.console !== false) {
+        transports.push(new winston.transports.Console());
+    }
+
+    return transports;
+}
+
+const LOG_FORMAT = winston.format.combine(
+    winston.format.timestamp({ format: () => new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) }),
+    winston.format.errors({ stack: true }),
+    winston.format.printf(({ timestamp, level, message, stack }) => `${timestamp} [${level.toUpperCase()}] ${stack || message}`)
+);
+
 // 初始化日志系统
+ensureLogDir(CONSTANTS.DEFAULT_LOG_DIR);
 const logger = winston.createLogger({
     level: 'info',
-    format: winston.format.combine(
-        winston.format.timestamp({ format: () => new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) }),
-        winston.format.printf(({ timestamp, level, message }) => `${timestamp} [${level.toUpperCase()}] ${message}`)
-    ),
-    transports: [
-        new winston.transports.File({ filename: path.join(__dirname, 'error.log'), level: 'error' }),
-        new winston.transports.File({ filename: path.join(__dirname, 'run.log') }),
-        new winston.transports.Console() // 开发调试时在控制台也输出
-    ]
+    format: LOG_FORMAT,
+    transports: buildLoggerTransports()
 });
 
 class VideoBot {
@@ -52,7 +100,11 @@ class VideoBot {
         this.state = {
             pushTimers: new Map(),      // 推送定时器 Map<chatId, {timer, nextIndex, fromId}>
             uploadCooldown: new Map(),  // 上传防刷/合并 Map<adminId, {count, timer, chatId}>
-            dbPingTimer: null           // 数据库心跳定时器
+            dbPingTimer: null,
+            pollingRecoveryTimer: null,
+            pollingRecoveryInProgress: false,
+            pollingErrorCount: 0,
+            lastPollingError: null
         };
     }
 
@@ -70,10 +122,19 @@ class VideoBot {
     async shutdown() {
         logger.info('正在关闭服务...');
         if (this.state.dbPingTimer) clearInterval(this.state.dbPingTimer);
+        if (this.state.pollingRecoveryTimer) clearTimeout(this.state.pollingRecoveryTimer);
 
         // 清理所有推送定时器
         for (const [chatId, data] of this.state.pushTimers) {
             clearTimeout(data.timer);
+        }
+
+        if (this.bot) {
+            try {
+                await this.bot.stopPolling();
+            } catch (err) {
+                logger.warn(`停止轮询失败: ${err.message}`);
+            }
         }
 
         if (this.pool) await this.pool.end();
@@ -84,7 +145,12 @@ class VideoBot {
     async loadConfig() {
         try {
             const rawData = await fs.readFile(CONSTANTS.CONFIG_PATH, 'utf8');
-            this.config = JSON.parse(rawData);
+            const parsedConfig = JSON.parse(rawData);
+            const normalizedConfig = this.normalizeConfig(parsedConfig);
+
+            this.validateConfig(normalizedConfig);
+            this.config = normalizedConfig;
+            this.configureLogger();
             logger.info('配置已加载');
         } catch (err) {
             logger.error(`配置文件加载失败: ${err.message}`);
@@ -93,13 +159,81 @@ class VideoBot {
         }
     }
 
+    async saveConfig() {
+        const serialized = JSON.stringify(this.config, null, 4) + '\n';
+        await fs.writeFile(CONSTANTS.CONFIG_PATH, serialized, 'utf8');
+    }
+
+    normalizeConfig(config = {}) {
+        return {
+            ...DEFAULT_CONFIG,
+            ...config,
+            adminIds: Array.isArray(config.adminIds)
+                ? config.adminIds.filter(Boolean).map(id => String(id).trim())
+                : DEFAULT_CONFIG.adminIds,
+            sql: {
+                ...DEFAULT_CONFIG.sql,
+                ...(config.sql || {})
+            },
+            logging: {
+                ...DEFAULT_CONFIG.logging,
+                ...(config.logging || {})
+            },
+            infos: config.infos || DEFAULT_CONFIG.infos,
+            adminInfos: config.adminInfos || DEFAULT_CONFIG.adminInfos,
+            uploadVideosInfos: config.uploadVideosInfos || DEFAULT_CONFIG.uploadVideosInfos,
+            startVideoId: this.normalizePositiveInteger(config.startVideoId, DEFAULT_CONFIG.startVideoId),
+            pushInterval: this.normalizeInterval(config.pushInterval, CONSTANTS.DEFAULT_PUSH_INTERVAL),
+            pingInterval: this.normalizeInterval(config.pingInterval, CONSTANTS.PING_INTERVAL)
+        };
+    }
+
+    normalizeInterval(value, fallback) {
+        const parsedValue = Number(value);
+        return Number.isFinite(parsedValue) && parsedValue > 0 ? parsedValue : fallback;
+    }
+
+    normalizePositiveInteger(value, fallback) {
+        const parsedValue = Number(value);
+        return Number.isInteger(parsedValue) && parsedValue > 0 ? parsedValue : fallback;
+    }
+
+    validateConfig(config) {
+        if (!config.botToken || typeof config.botToken !== 'string') {
+            throw new Error('botToken 未配置');
+        }
+
+        const requiredSqlFields = ['host', 'user', 'database'];
+        for (const field of requiredSqlFields) {
+            if (!config.sql[field]) {
+                throw new Error(`sql.${field} 未配置`);
+            }
+        }
+
+        if (!Array.isArray(config.adminIds) || config.adminIds.length === 0) {
+            logger.warn('adminIds 为空，当前仅私聊和群管理员可控制机器人');
+        }
+    }
+
+    configureLogger() {
+        logger.configure({
+            level: this.config.logging.level || 'info',
+            format: LOG_FORMAT,
+            transports: buildLoggerTransports(this.config.logging)
+        });
+    }
+
     setupConfigWatcher() {
         // 使用绝对路径监听
         chokidar.watch(CONSTANTS.CONFIG_PATH).on('change', async () => {
             logger.info('检测到配置文件更改，重新加载...');
-            await this.loadConfig();
-            // 重新初始化数据库连接（如果数据库配置变更）
-            await this.initializeDatabase();
+            try {
+                await this.loadConfig();
+                // 重新初始化数据库连接（如果数据库配置变更）
+                await this.initializeDatabase();
+            } catch (err) {
+                logger.error(`配置热重载失败: ${err.message}`);
+            }
         });
     }
 
@@ -145,10 +279,21 @@ class VideoBot {
     // [Fix #4] 改为 async，await stopPolling() 确保旧实例完全停止后再启动新实例，避免双重 polling 竞争
     async startBot() {
         if (this.bot) {
-            await this.bot.stopPolling();
+            try {
+                await this.bot.stopPolling();
+            } catch (err) {
+                logger.warn(`停止旧轮询实例失败: ${err.message}`);
+            }
+        }
+
+        if (this.state.pollingRecoveryTimer) {
+            clearTimeout(this.state.pollingRecoveryTimer);
+            this.state.pollingRecoveryTimer = null;
         }
 
         this.bot = new TelegramBot(this.config.botToken, { polling: true });
+        this.state.pollingRecoveryInProgress = false;
+        this.state.pollingErrorCount = 0;
         this.registerHandlers();
         logger.info('机器人已启动，监听消息中...');
     }
@@ -159,11 +304,141 @@ class VideoBot {
         // 命令正则匹配
         this.bot.onText(/\/kc/, async (msg) => this.authWrapper(msg, this.handleKcCommand.bind(this)));
         this.bot.onText(/\/zt/, async (msg) => this.authWrapper(msg, (m) => this.handlePause(m.chat.id)));
+        this.bot.onText(/\/getstart(?:@\S+)?$/, async (msg) => this.handleGetStartCommand(msg));
+        this.bot.onText(/\/setstart(?:@\S+)?\s+(\d+)$/, async (msg, match) => this.handleSetStartCommand(msg, match));
+        this.bot.onText(/\/setstart(?:@\S+)?(?:\s+.*)?$/, async (msg, match) => this.handleSetStartCommand(msg, match));
 
         this.bot.on('callback_query', this.handleCallbackQuery.bind(this));
 
         // 错误处理，防止 crash
-        this.bot.on('polling_error', (error) => logger.error(`Telegram Polling Error: ${error.code} - ${error.message}`));
+        this.bot.on('polling_error', (error) => {
+            this.handlePollingError(error).catch(err => {
+                logger.error(`Polling 异常恢复失败: ${err.stack || err.message}`);
+            });
+        });
+    }
+
+    buildPollingErrorSignature(error) {
+        return `${error.code || 'UNKNOWN'}:${error.message || 'NO_MESSAGE'}`;
+    }
+
+    extractRetryAfter(error) {
+        const retryAfter = error.response && error.response.body && error.response.body.parameters
+            ? Number(error.response.body.parameters.retry_after)
+            : NaN;
+
+        if (Number.isFinite(retryAfter) && retryAfter > 0) {
+            return retryAfter * 1000;
+        }
+
+        const matched = (error.message || '').match(/retry after\s+(\d+)/i);
+        return matched ? Number(matched[1]) * 1000 : null;
+    }
+
+    classifyPollingError(error) {
+        const message = (error.message || '').toLowerCase();
+        const code = (error.code || '').toUpperCase();
+
+        if (code === 'ETELEGRAM' && message.includes('429')) {
+            return {
+                type: 'rate_limit',
+                delay: Math.max(this.extractRetryAfter(error) || 5000, CONSTANTS.MIN_POLLING_RECOVERY_DELAY),
+                shouldRestart: true
+            };
+        }
+
+        if (code === 'ETELEGRAM' && message.includes('502')) {
+            return { type: 'telegram_5xx', delay: 15000, shouldRestart: true };
+        }
+
+        if (
+            code === 'EFATAL' ||
+            message.includes('econnreset') ||
+            message.includes('etimedout') ||
+            message.includes('aggregateerror')
+        ) {
+            const delay = Math.min(
+                CONSTANTS.MIN_POLLING_RECOVERY_DELAY * Math.max(this.state.pollingErrorCount, 1),
+                CONSTANTS.MAX_POLLING_RECOVERY_DELAY
+            );
+
+            return { type: 'network', delay, shouldRestart: true };
+        }
+
+        return { type: 'unknown', delay: 30000, shouldRestart: false };
+    }
+
+    logPollingError(error, recoveryPlan) {
+        const now = Date.now();
+        const signature = this.buildPollingErrorSignature(error);
+        const lastError = this.state.lastPollingError;
+        const withinWindow = lastError
+            && lastError.signature === signature
+            && now - lastError.loggedAt < CONSTANTS.POLLING_ERROR_LOG_WINDOW;
+
+        if (withinWindow) {
+            lastError.count += 1;
+            this.state.lastPollingError = lastError;
+            return;
+        }
+
+        if (lastError && lastError.count > 1) {
+            logger.warn(`相同 Polling 错误在 ${CONSTANTS.POLLING_ERROR_LOG_WINDOW / 1000} 秒内重复 ${lastError.count} 次: ${lastError.signature}`);
+        }
+
+        const suffix = recoveryPlan.shouldRestart
+            ? `，将在 ${Math.ceil(recoveryPlan.delay / 1000)} 秒后重试轮询`
+            : '，暂不自动重启轮询';
+
+        logger.error(`Telegram Polling Error [${recoveryPlan.type}]: ${error.code} - ${error.message}${suffix}`);
+        this.state.lastPollingError = { signature, loggedAt: now, count: 1 };
+    }
+
+    schedulePollingRecovery(delay, reason) {
+        if (this.state.pollingRecoveryTimer || this.state.pollingRecoveryInProgress) {
+            logger.warn(`轮询恢复已在进行中，跳过重复调度: ${reason}`);
+            return;
+        }
+
+        this.state.pollingRecoveryTimer = setTimeout(async () => {
+            this.state.pollingRecoveryTimer = null;
+            this.state.pollingRecoveryInProgress = true;
+
+            try {
+                logger.warn(`开始恢复 Telegram 轮询: ${reason}`);
+                await this.startBot();
+            } catch (err) {
+                this.state.pollingRecoveryInProgress = false;
+                this.state.pollingErrorCount += 1;
+                const retryDelay = Math.min(
+                    CONSTANTS.MIN_POLLING_RECOVERY_DELAY * Math.max(this.state.pollingErrorCount, 1),
+                    CONSTANTS.MAX_POLLING_RECOVERY_DELAY
+                );
+                logger.error(`轮询恢复失败: ${err.message}，将在 ${Math.ceil(retryDelay / 1000)} 秒后再次尝试`);
+                this.schedulePollingRecovery(retryDelay, 'recovery_failed');
+            }
+        }, delay);
+    }
+
+    async handlePollingError(error) {
+        this.state.pollingErrorCount += 1;
+        const recoveryPlan = this.classifyPollingError(error);
+
+        this.logPollingError(error, recoveryPlan);
+
+        if (!recoveryPlan.shouldRestart) {
+            return;
+        }
+
+        if (this.bot) {
+            try {
+                await this.bot.stopPolling();
+            } catch (stopErr) {
+                logger.warn(`Polling 错误后停止轮询失败: ${stopErr.message}`);
+            }
+        }
+
+        this.schedulePollingRecovery(recoveryPlan.delay, recoveryPlan.type);
     }
 
     // 统一权限验证包装器
@@ -257,7 +532,15 @@ class VideoBot {
             const [rows] = await this.pool.query('SELECT now FROM `groups` WHERE chatid = ?', [String(chatId)]);
 
             // 默认为 0
-            const startIndex = rows.length > 0 ? rows[0].now : 0;
+            const savedIndex = rows.length > 0 ? rows[0].now : 0;
+
+            const [thresholdRows] = await this.pool.query(
+                'SELECT COUNT(*) as offset FROM videos WHERE id < ?',
+                [this.config.startVideoId]
+            );
+
+            const thresholdIndex = thresholdRows[0].offset;
+            const startIndex = Math.max(savedIndex, thresholdIndex);
 
             // 只有不存在记录时才插入，存在则忽略 (INSERT IGNORE)
             await this.pool.query('INSERT IGNORE INTO `groups` (chatid, now) VALUES (?, ?)', [String(chatId), 0]);
@@ -266,6 +549,45 @@ class VideoBot {
         } catch (err) {
             logger.error(`KC命令异常: ${err.message}`);
             this.sendErrorMessage(chatId, '启动失败，请检查机器人日志');
+        }
+    }
+
+    async handleGetStartCommand(msg) {
+        const { chat, from } = msg;
+        if (!from || !this.isAdmin(from.id)) {
+            await this.bot.sendMessage(chat.id, '只有配置中的管理员可以查看起始视频 ID。');
+            return;
+        }
+
+        await this.bot.sendMessage(chat.id, `当前起始视频 ID 为：${this.config.startVideoId}`);
+    }
+
+    async handleSetStartCommand(msg, match) {
+        const { chat, from } = msg;
+        if (!from || !this.isAdmin(from.id)) {
+            await this.bot.sendMessage(chat.id, '只有配置中的管理员可以设置起始视频 ID。');
+            return;
+        }
+
+        const requestedStartVideoId = this.normalizePositiveInteger(match && match[1], NaN);
+        if (!Number.isInteger(requestedStartVideoId) || requestedStartVideoId <= 0) {
+            await this.bot.sendMessage(chat.id, '请输入有效的正整数，例如：/setstart 501');
+            return;
+        }
+
+        try {
+            const previousStartVideoId = this.config.startVideoId;
+            this.config.startVideoId = requestedStartVideoId;
+            await this.saveConfig();
+
+            logger.info(`管理员 ${from.id} 将 startVideoId 从 ${previousStartVideoId} 更新为 ${requestedStartVideoId}`);
+            await this.bot.sendMessage(
+                chat.id,
+                `起始视频 ID 已更新为：${requestedStartVideoId}\n新开启的 /kc 推送会自动跳过更早的视频。`
+            );
+        } catch (err) {
+            logger.error(`保存 startVideoId 失败: ${err.message}`);
+            await this.bot.sendMessage(chat.id, '保存起始视频 ID 失败，请检查配置文件写入权限。');
         }
     }
 
@@ -280,7 +602,7 @@ class VideoBot {
         let currentVideoId = null;
         try {
             // 同时查询 id 字段，供失效清理使用
-            const [rows] = await this.pool.query('SELECT id, url FROM videos LIMIT 1 OFFSET ?', [index]);
+            const [rows] = await this.pool.query('SELECT id, url FROM videos ORDER BY id ASC LIMIT 1 OFFSET ?', [index]);
 
             if (rows.length === 0) {
                 await this.handleLowInventory(chatId);
@@ -530,6 +852,15 @@ class VideoBot {
 // 启动
 const botInstance = new VideoBot();
 botInstance.initialize().catch(err => {
-    console.error('FATAL ERROR:', err);
+    logger.error(`FATAL ERROR: ${err.stack || err.message}`);
+    process.exit(1);
+});
+
+process.on('unhandledRejection', (reason) => {
+    logger.error(`Unhandled Rejection: ${reason && reason.stack ? reason.stack : reason}`);
+});
+
+process.on('uncaughtException', (error) => {
+    logger.error(`Uncaught Exception: ${error.stack || error.message}`);
     process.exit(1);
 });
